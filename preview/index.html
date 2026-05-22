@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <title>Cookie Manager Smoke Test</title>
+    <style>
+        body { font-family: -apple-system, sans-serif; margin: 0; padding: 16px; max-width: 640px; }
+        h1 { color: #2f6ce6; }
+        button { margin: 4px; padding: 6px 10px; }
+    </style>
+</head>
+<body>
+    <h1>Cookie Manager — Smoke Test</h1>
+    <p>Tap the floating "C" button on the bottom-right.</p>
+    <button onclick="document.cookie='test_a=hello;path=/'">Add test_a</button>
+    <button onclick="document.cookie='test_b=world;path=/'">Add test_b</button>
+    <button onclick="document.cookie='test_c='+encodeURIComponent('值带特殊\"字符<')+';path=/'">Add 编码 cookie</button>
+
+    <script>
+        const gmStore = {};
+        window.GM_getValue = (k, d) => (k in gmStore) ? gmStore[k] : d;
+        window.GM_setValue = (k, v) => { gmStore[k] = v; };
+        window.GM_registerMenuCommand = (n) => console.log('menu:', n);
+    </script>
+    <script src="script.js"></script>
+</body>
+</html>

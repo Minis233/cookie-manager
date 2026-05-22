@@ -1,0 +1,9 @@
+node_modules/
+.DS_Store
+*.log
+*.tmp
+.idea/
+.vscode/
+
+# Preview harness — script.js is a symlink/copy of the main file at runtime
+preview/script.js
