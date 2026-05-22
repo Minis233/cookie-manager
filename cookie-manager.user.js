@@ -2,7 +2,7 @@
 // @name         Cookie Manager
 // @name:zh-CN   Cookie 管理器
 // @namespace    https://github.com/Minis233/cookie-manager
-// @version      0.5.0
+// @version      0.5.1
 // @description  A modern cookie manager userscript: dual-engine read/write, batch CRUD, multi-select, paste-to-import, JSON export/import, multiple copy formats, trash bin, dark mode, sort/filter/group, bilingual UI.
 // @description:zh-CN  现代化 Cookie 管理油猴脚本：双核引擎读写、批量增删改查、多选、粘贴解析、JSON 导入导出、多种复制格式、回收站、暗色模式、排序/筛选/分组、中英双语 UI
 // @author       Minis
@@ -81,7 +81,10 @@
             menu: '更多', exp: '导出 JSON', expSel: '导出选中', impJson: '导入 JSON',
             trash: '回收站', trashEmpty: '回收站为空', trashCount: n => `回收站 (${n})`,
             trashRestore: '恢复', trashPurge: '永久删除', trashClear: '清空回收站',
+            trashRestoreN: n => `恢复(${n})`, trashPurgeN: n => `永久删除(${n})`,
             trashConfirmClear: '永久清空回收站？此操作不可逆。',
+            trashConfirmPurgeN: n => `永久删除选中的 ${n} 条？此操作不可逆。`,
+            trashRestoredN: n => `已恢复 ${n} 条`, trashPurgedN: n => `已永久删除 ${n} 条`,
             trashRestored: '已恢复', trashPurged: '已永久删除', trashCleared: '回收站已清空',
             trashTime: ts => new Date(ts).toLocaleString(),
             copyAs: '复制为...', cfHeader: 'Cookie Header', cfCurl: 'cURL --cookie', cfJson: 'JSON', cfKv: 'KV (key=value)',
@@ -128,7 +131,10 @@
             menu: 'More', exp: 'Export JSON', expSel: 'Export Selected', impJson: 'Import JSON',
             trash: 'Trash', trashEmpty: 'Trash is empty', trashCount: n => `Trash (${n})`,
             trashRestore: 'Restore', trashPurge: 'Delete forever', trashClear: 'Empty trash',
+            trashRestoreN: n => `Restore (${n})`, trashPurgeN: n => `Delete forever (${n})`,
             trashConfirmClear: 'Permanently empty the trash? This cannot be undone.',
+            trashConfirmPurgeN: n => `Permanently delete ${n} selected? This cannot be undone.`,
+            trashRestoredN: n => `Restored ${n} item${n === 1 ? '' : 's'}`, trashPurgedN: n => `Permanently deleted ${n}`,
             trashRestored: 'Restored', trashPurged: 'Deleted forever', trashCleared: 'Trash emptied',
             trashTime: ts => new Date(ts).toLocaleString(),
             copyAs: 'Copy As...', cfHeader: 'Cookie Header', cfCurl: 'cURL --cookie', cfJson: 'JSON', cfKv: 'KV (key=value)',
@@ -598,11 +604,41 @@ button{font-family:inherit}
         trashSaveAll(all);
         return true;
     }
+    async function trashRestoreMany(ids) {
+        if (!ids?.length) return 0;
+        const all = trashLoadAll();
+        const hk = trashHostKey();
+        const bucket = all[hk] || [];
+        const idSet = new Set(ids);
+        const toRestore = bucket.filter(it => idSet.has(it.id)).map(it => it.cookie);
+        if (!toRestore.length) return 0;
+        // 直接调 ckMgr.set，不通过 restoreCookies（会触发 toast + render，循环性能差）
+        await Promise.all(toRestore.map(c => {
+            const days = c.expires ? Math.max(1, Math.round((c.expires - Date.now()) / 86400000)) : 365;
+            return ckMgr.set(c.key, c.value, {
+                domain: c.domain, path: c.path, days,
+                hostOnly: !!c._hostOnly, secure: !!c.secure, sameSite: c.sameSite || ''
+            });
+        }));
+        all[hk] = bucket.filter(it => !idSet.has(it.id));
+        trashSaveAll(all);
+        return toRestore.length;
+    }
     function trashRemoveOne(id) {
         const all = trashLoadAll();
         const hk = trashHostKey();
         all[hk] = (all[hk] || []).filter(it => it.id !== id);
         trashSaveAll(all);
+    }
+    function trashRemoveMany(ids) {
+        if (!ids?.length) return 0;
+        const all = trashLoadAll();
+        const hk = trashHostKey();
+        const bucket = all[hk] || [];
+        const idSet = new Set(ids);
+        all[hk] = bucket.filter(it => !idSet.has(it.id));
+        trashSaveAll(all);
+        return bucket.length - all[hk].length;
     }
     function trashClearHost() {
         const all = trashLoadAll();
@@ -665,45 +701,116 @@ button{font-family:inherit}
     /* ---------- 回收站面板 ---------- */
     function showTrash() {
         const { p, ov, close } = makeOv();
+        // 局部状态：与主面板独立，不互相干扰
+        const trashState = { sel: false, pool: new Set() };
         function rebuild() {
             const items = trashList();
+            // 清掉无效的选中项（被恢复或永久删除的 id）
+            const validIds = new Set(items.map(it => it.id));
+            for (const id of [...trashState.pool]) if (!validIds.has(id)) trashState.pool.delete(id);
+            if (!items.length && trashState.sel) trashState.sel = false;
+
             p.innerHTML = `
                 <div class="head"><h3></h3><span class="x">×</span></div>
                 <div class="body"><div id="trash-list"></div></div>
                 <div class="foot"></div>`;
             p.querySelector('.head h3').textContent = items.length ? t('trashCount', items.length) : t('trash');
             p.querySelector('.x').addEventListener('click', close);
+
             const list = p.querySelector('#trash-list');
+            const wrap = el('div', trashState.sel ? 'sel' : '');
+            list.appendChild(wrap);
             if (!items.length) {
-                const e = document.createElement('div');
-                e.className = 'empty';
-                e.textContent = t('trashEmpty');
-                list.appendChild(e);
+                wrap.appendChild(el('div', 'empty', t('trashEmpty')));
             } else {
-                for (const it of items) list.appendChild(renderTrashItem(it, rebuild));
+                for (const it of items) wrap.appendChild(renderTrashItem(it, rebuild, trashState));
             }
-            const foot = p.querySelector('.foot');
-            foot.appendChild(mkBtn(t('cancel'), '', close));
-            if (items.length) {
-                foot.appendChild(mkBtn(t('trashClear'), 'warn', async () => {
-                    const yes = await dialog({ message: t('trashConfirmClear'), ok: t('trashPurge'), danger: true });
-                    if (!yes) return;
-                    trashClearHost();
-                    toast(t('trashCleared'), 'ok');
-                    rebuild();
-                }));
-            }
+
+            renderTrashFoot(p, items, trashState, rebuild, close);
         }
         rebuild();
     }
 
-    function renderTrashItem(it, refresh) {
+    function renderTrashFoot(p, items, ts, rebuild, close) {
+        const foot = p.querySelector('.foot');
+        foot.innerHTML = '';
+        if (!items.length) {
+            foot.appendChild(mkBtn(t('cancel'), '', close));
+            return;
+        }
+        // 多选切换
+        foot.appendChild(mkBtn(ts.sel ? t('selExit') : t('sel'), '', () => {
+            ts.sel = !ts.sel;
+            if (!ts.sel) ts.pool.clear();
+            rebuild();
+        }));
+        if (ts.sel) {
+            const ids = items.map(it => it.id);
+            const inPool = ids.filter(id => ts.pool.has(id)).length;
+            const allSelected = inPool === ids.length;
+            const someSelected = inPool > 0 && !allSelected;
+            const selAllLabel = allSelected ? t('selNone') : (someSelected ? t('selAllPlus', ids.length - inPool) : t('selAll'));
+            const selAllBtn = mkBtn(selAllLabel, '', () => {
+                if (allSelected) ts.pool.clear();
+                else for (const id of ids) ts.pool.add(id);
+                rebuild();
+            });
+            foot.appendChild(selAllBtn);
+
+            const n = ts.pool.size;
+            foot.appendChild(mkBtn(t('trashRestoreN', n), 'pri', async () => {
+                if (!n) return toast(t('tNotSelected'), 'err');
+                const restored = await trashRestoreMany([...ts.pool]);
+                ts.pool.clear();
+                toast(t('trashRestoredN', restored), 'ok');
+                rebuild();
+                render();
+            }));
+            foot.appendChild(mkBtn(t('trashPurgeN', n), 'warn', async () => {
+                if (!n) return toast(t('tNotSelected'), 'err');
+                const yes = await dialog({ message: t('trashConfirmPurgeN', n), ok: t('trashPurge'), danger: true });
+                if (!yes) return;
+                const removed = trashRemoveMany([...ts.pool]);
+                ts.pool.clear();
+                toast(t('trashPurgedN', removed), 'ok');
+                rebuild();
+            }));
+        } else {
+            foot.appendChild(mkBtn(t('cancel'), '', close));
+            foot.appendChild(mkBtn(t('trashClear'), 'warn', async () => {
+                const yes = await dialog({ message: t('trashConfirmClear'), ok: t('trashPurge'), danger: true });
+                if (!yes) return;
+                trashClearHost();
+                toast(t('trashCleared'), 'ok');
+                rebuild();
+            }));
+        }
+    }
+
+    function renderTrashItem(it, refresh, ts) {
         const c = it.cookie;
         const w = el('div', 'ck');
         const head = el('div', 'ck-h');
+
+        // 复选框（多选模式下显示）
+        const cb = el('span', 'cb');
+        if (ts.pool.has(it.id)) { cb.classList.add('on'); cb.textContent = '✓'; }
+        cb.addEventListener('click', e => {
+            e.stopPropagation();
+            if (cb.classList.toggle('on')) { cb.textContent = '✓'; ts.pool.add(it.id); }
+            else { cb.textContent = ''; ts.pool.delete(it.id); }
+            // 仅刷新 footer，避免重新渲染整个 list 导致 checkbox 抖动
+            const foot = w.closest('.panel')?.querySelector('.foot');
+            if (foot) {
+                const items = trashList();
+                renderTrashFoot(w.closest('.panel'), items, ts, refresh, () => w.closest('.ov').remove());
+            }
+        });
+        head.appendChild(cb);
+
         head.append(el('span', 'ck-k', safeDecode(c.key)));
-        const ts = el('span', 'ck-size', t('trashTime', it.deletedAt));
-        head.appendChild(ts);
+        const tsEl = el('span', 'ck-size', t('trashTime', it.deletedAt));
+        head.appendChild(tsEl);
         if (c.secure) head.appendChild(el('span', 'ck-flag', t('secure')));
         if (c.httpOnly) head.appendChild(el('span', 'ck-flag', t('http')));
         if (c.sameSite) head.appendChild(el('span', 'ck-flag', `${t('sameSite')}=${c.sameSite}`));
@@ -717,6 +824,7 @@ button{font-family:inherit}
                 await trashRestoreOne(it.id);
                 toast(t('trashRestored'), 'ok');
                 refresh();
+                render();
             }),
             mkBtn(t('trashPurge'), 'warn sm', () => {
                 trashRemoveOne(it.id);
