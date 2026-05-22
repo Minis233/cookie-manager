@@ -2,9 +2,9 @@
 // @name         Cookie Manager
 // @name:zh-CN   Cookie 管理器
 // @namespace    https://github.com/Minis233/cookie-manager
-// @version      0.4.1
-// @description  A modern cookie manager userscript: dual-engine read/write, batch CRUD, multi-select, paste-to-import, JSON export/import, multiple copy formats, undo delete, dark mode, sort/filter/group, bilingual UI.
-// @description:zh-CN  现代化 Cookie 管理油猴脚本：双核引擎读写、批量增删改查、多选、粘贴解析、JSON 导入导出、多种复制格式、撤销删除、暗色模式、排序/筛选/分组、中英双语 UI
+// @version      0.5.0
+// @description  A modern cookie manager userscript: dual-engine read/write, batch CRUD, multi-select, paste-to-import, JSON export/import, multiple copy formats, trash bin, dark mode, sort/filter/group, bilingual UI.
+// @description:zh-CN  现代化 Cookie 管理油猴脚本：双核引擎读写、批量增删改查、多选、粘贴解析、JSON 导入导出、多种复制格式、回收站、暗色模式、排序/筛选/分组、中英双语 UI
 // @author       Minis
 // @license      MIT
 // @homepageURL  https://github.com/Minis233/cookie-manager
@@ -79,6 +79,11 @@
             addRow: '+ 添加一行', batchSave: '全部添加',
             delConfirm: '删除',
             menu: '更多', exp: '导出 JSON', expSel: '导出选中', impJson: '导入 JSON',
+            trash: '回收站', trashEmpty: '回收站为空', trashCount: n => `回收站 (${n})`,
+            trashRestore: '恢复', trashPurge: '永久删除', trashClear: '清空回收站',
+            trashConfirmClear: '永久清空回收站？此操作不可逆。',
+            trashRestored: '已恢复', trashPurged: '已永久删除', trashCleared: '回收站已清空',
+            trashTime: ts => new Date(ts).toLocaleString(),
             copyAs: '复制为...', cfHeader: 'Cookie Header', cfCurl: 'cURL --cookie', cfJson: 'JSON', cfKv: 'KV (key=value)',
             impTitle: '导入 Cookie',
             impHint: '支持以下格式：\n• JSON 数组（本工具或 EditThisCookie 导出）\n• 每行 key=value\n• Cookie header 字符串',
@@ -121,6 +126,11 @@
             addRow: '+ Add Row', batchSave: 'Add All',
             delConfirm: 'Delete',
             menu: 'More', exp: 'Export JSON', expSel: 'Export Selected', impJson: 'Import JSON',
+            trash: 'Trash', trashEmpty: 'Trash is empty', trashCount: n => `Trash (${n})`,
+            trashRestore: 'Restore', trashPurge: 'Delete forever', trashClear: 'Empty trash',
+            trashConfirmClear: 'Permanently empty the trash? This cannot be undone.',
+            trashRestored: 'Restored', trashPurged: 'Deleted forever', trashCleared: 'Trash emptied',
+            trashTime: ts => new Date(ts).toLocaleString(),
             copyAs: 'Copy As...', cfHeader: 'Cookie Header', cfCurl: 'cURL --cookie', cfJson: 'JSON', cfKv: 'KV (key=value)',
             impTitle: 'Import Cookies',
             impHint: 'Supported formats:\n• JSON array (from this tool or EditThisCookie)\n• key=value per line\n• Cookie header string',
@@ -526,6 +536,80 @@ button{font-family:inherit}
         render();
     }
 
+    /* ---------- 回收站（持久化） ---------- */
+    const TRASH_KEY = 'cm_trash_v1';
+    const TRASH_TTL = 30 * 86400000;          // 30 天后自动清掉
+    const TRASH_MAX = 200;                    // 单个 host 最多 200 条
+    function trashHostKey() {
+        // 按 host 分仓，避免不同站点串扰
+        return location.hostname || 'global';
+    }
+    function trashLoadAll() {
+        const all = gmGet(TRASH_KEY, {}) || {};
+        return typeof all === 'object' && all ? all : {};
+    }
+    function trashSaveAll(all) { gmSet(TRASH_KEY, all); }
+    function trashList() {
+        const all = trashLoadAll();
+        const items = all[trashHostKey()] || [];
+        // 顺手清掉过期的
+        const now = Date.now();
+        const fresh = items.filter(it => now - (it.deletedAt || 0) < TRASH_TTL);
+        if (fresh.length !== items.length) {
+            all[trashHostKey()] = fresh;
+            trashSaveAll(all);
+        }
+        return fresh;
+    }
+    function trashAdd(cookies) {
+        if (!cookies?.length) return;
+        const all = trashLoadAll();
+        const hk = trashHostKey();
+        let bucket = all[hk] || [];
+        const now = Date.now();
+        for (const c of cookies) {
+            bucket.unshift({
+                id: 'tr_' + now.toString(36) + '_' + Math.random().toString(36).slice(2, 8),
+                deletedAt: now,
+                cookie: {
+                    key: c.key, value: c.value,
+                    domain: c.domain, path: c.path,
+                    secure: !!c.secure, httpOnly: !!c.httpOnly,
+                    sameSite: c.sameSite || '', expires: c.expires || null,
+                    _hostOnly: !!c._hostOnly, _legacy: !!c._legacy
+                }
+            });
+        }
+        // 截断
+        if (bucket.length > TRASH_MAX) bucket = bucket.slice(0, TRASH_MAX);
+        all[hk] = bucket;
+        trashSaveAll(all);
+    }
+    async function trashRestoreOne(id) {
+        const all = trashLoadAll();
+        const hk = trashHostKey();
+        const bucket = all[hk] || [];
+        const idx = bucket.findIndex(it => it.id === id);
+        if (idx < 0) return false;
+        const item = bucket[idx];
+        await restoreCookies([item.cookie]);
+        bucket.splice(idx, 1);
+        all[hk] = bucket;
+        trashSaveAll(all);
+        return true;
+    }
+    function trashRemoveOne(id) {
+        const all = trashLoadAll();
+        const hk = trashHostKey();
+        all[hk] = (all[hk] || []).filter(it => it.id !== id);
+        trashSaveAll(all);
+    }
+    function trashClearHost() {
+        const all = trashLoadAll();
+        delete all[trashHostKey()];
+        trashSaveAll(all);
+    }
+
     function parseImport(text) {
         text = (text || '').trim();
         if (!text) return [];
@@ -576,6 +660,72 @@ button{font-family:inherit}
             toast(t('tImportedN', ok), ok ? 'ok' : 'err');
             if (ok > 0) { close(); render(); }
         });
+    }
+
+    /* ---------- 回收站面板 ---------- */
+    function showTrash() {
+        const { p, ov, close } = makeOv();
+        function rebuild() {
+            const items = trashList();
+            p.innerHTML = `
+                <div class="head"><h3></h3><span class="x">×</span></div>
+                <div class="body"><div id="trash-list"></div></div>
+                <div class="foot"></div>`;
+            p.querySelector('.head h3').textContent = items.length ? t('trashCount', items.length) : t('trash');
+            p.querySelector('.x').addEventListener('click', close);
+            const list = p.querySelector('#trash-list');
+            if (!items.length) {
+                const e = document.createElement('div');
+                e.className = 'empty';
+                e.textContent = t('trashEmpty');
+                list.appendChild(e);
+            } else {
+                for (const it of items) list.appendChild(renderTrashItem(it, rebuild));
+            }
+            const foot = p.querySelector('.foot');
+            foot.appendChild(mkBtn(t('cancel'), '', close));
+            if (items.length) {
+                foot.appendChild(mkBtn(t('trashClear'), 'warn', async () => {
+                    const yes = await dialog({ message: t('trashConfirmClear'), ok: t('trashPurge'), danger: true });
+                    if (!yes) return;
+                    trashClearHost();
+                    toast(t('trashCleared'), 'ok');
+                    rebuild();
+                }));
+            }
+        }
+        rebuild();
+    }
+
+    function renderTrashItem(it, refresh) {
+        const c = it.cookie;
+        const w = el('div', 'ck');
+        const head = el('div', 'ck-h');
+        head.append(el('span', 'ck-k', safeDecode(c.key)));
+        const ts = el('span', 'ck-size', t('trashTime', it.deletedAt));
+        head.appendChild(ts);
+        if (c.secure) head.appendChild(el('span', 'ck-flag', t('secure')));
+        if (c.httpOnly) head.appendChild(el('span', 'ck-flag', t('http')));
+        if (c.sameSite) head.appendChild(el('span', 'ck-flag', `${t('sameSite')}=${c.sameSite}`));
+        w.append(head, el('div', 'ck-v', safeDecode(c.value)));
+        const meta = el('div', 'ck-p');
+        meta.textContent = `${c.domain || location.hostname}  |  ${c.path || '/'}`;
+        w.appendChild(meta);
+        const a = el('div', 'ck-a');
+        a.append(
+            mkBtn(t('trashRestore'), 'pri sm', async () => {
+                await trashRestoreOne(it.id);
+                toast(t('trashRestored'), 'ok');
+                refresh();
+            }),
+            mkBtn(t('trashPurge'), 'warn sm', () => {
+                trashRemoveOne(it.id);
+                toast(t('trashPurged'), 'ok');
+                refresh();
+            })
+        );
+        w.appendChild(a);
+        return w;
     }
 
     /* ---------- 主面板 ---------- */
@@ -673,9 +823,12 @@ button{font-family:inherit}
             showCopyAsMenu(e.currentTarget, state.all);
         });
         body.querySelector('[data-a=more]').addEventListener('click', e => {
+            const trashCount = trashList().length;
             popMenu(e.currentTarget, [
                 { label: t('exp'), fn: () => exportJson(state.all) },
                 { label: t('impJson'), fn: () => showImport() },
+                { divider: true },
+                { label: trashCount > 0 ? t('trashCount', trashCount) : t('trash'), fn: () => showTrash() },
                 { divider: true },
                 { label: t('theme') + ': ' + t('themeAuto'), active: prefs.theme === 'auto', fn: () => { setPref('theme','auto'); applyTheme(); } },
                 { label: t('theme') + ': ' + t('themeLight'), active: prefs.theme === 'light', fn: () => { setPref('theme','light'); applyTheme(); } },
@@ -687,6 +840,7 @@ button{font-family:inherit}
             const yes = await dialog({ title: t('confirmDelAllTitle'), message: t('confirmDelAll', state.all.length), ok: t('delConfirm'), danger: true });
             if (!yes) return;
             const snapshot = state.all.slice();
+            trashAdd(snapshot);
             await Promise.all(snapshot.map(c => ckMgr.del(c)));
             await render();
             toast(t('tDeleted'), 'ok', { label: t('tUndo'), fn: () => restoreCookies(snapshot) });
@@ -892,6 +1046,7 @@ button{font-family:inherit}
             mkBtn(t('copyAs'), 'sm', e => showCopyAsMenu(e.currentTarget, [c])),
             mkBtn(t('del'), 'warn sm', async () => {
                 if (!await dialog({ message: t('confirmDelOne', safeDecode(c.key)), ok: t('delConfirm'), danger: true })) return;
+                trashAdd([c]);
                 await ckMgr.del(c); await render();
                 toast(t('tDeleted'), 'ok', { label: t('tUndo'), fn: () => restoreCookies([c]) });
             })
@@ -947,6 +1102,7 @@ button{font-family:inherit}
                 const yes = await dialog({ message: t('confirmDelN', n), ok: t('delConfirm'), danger: true });
                 if (!yes) return;
                 const snapshot = [...state.pool.values()];
+                trashAdd(snapshot);
                 await Promise.all(snapshot.map(c => ckMgr.del(c)));
                 state.pool.clear();
                 await render();
