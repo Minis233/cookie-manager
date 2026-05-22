@@ -2,7 +2,7 @@
 // @name         Cookie Manager
 // @name:zh-CN   Cookie 管理器
 // @namespace    https://github.com/Minis233/cookie-manager
-// @version      0.4.0
+// @version      0.4.1
 // @description  A modern cookie manager userscript: dual-engine read/write, batch CRUD, multi-select, paste-to-import, JSON export/import, multiple copy formats, undo delete, dark mode, sort/filter/group, bilingual UI.
 // @description:zh-CN  现代化 Cookie 管理油猴脚本：双核引擎读写、批量增删改查、多选、粘贴解析、JSON 导入导出、多种复制格式、撤销删除、暗色模式、排序/筛选/分组、中英双语 UI
 // @author       Minis
@@ -361,7 +361,10 @@ button{font-family:inherit}
                     const list = await window.cookieStore.getAll();
                     return list.map(c => ({
                         key: c.name, value: c.value || '',
+                        // domain 保留原值（host-only cookie 的 c.domain 在 Chromium 里等于 location.hostname；
+                        // Firefox 实现可能为 null）。我们记一个 _hostOnly 标志，便于 set/del 时判断
                         domain: c.domain || location.hostname,
+                        _hostOnly: !c.domain,
                         path: c.path || '/',
                         secure: !!c.secure,
                         httpOnly: !!c.httpOnly,
@@ -374,17 +377,26 @@ button{font-family:inherit}
             return document.cookie.split(';').map(s => {
                 const i = s.indexOf('=');
                 if (i < 0) return null;
-                return { key: s.slice(0, i).trim(), value: s.slice(i + 1).trim(), domain: location.hostname, path: '/', _legacy: true };
+                return { key: s.slice(0, i).trim(), value: s.slice(i + 1).trim(), domain: location.hostname, path: '/', _legacy: true, _hostOnly: true };
             }).filter(Boolean);
         },
         async set(key, value, opt = {}) {
             const days = typeof opt.days === 'number' && !isNaN(opt.days) ? opt.days : 365;
             const path = opt.path || '/';
-            const domain = (opt.domain && opt.domain !== 'N/A') ? opt.domain : '';
+            // 如果 opt.hostOnly 显式为 true，则不发送 domain；否则按 opt.domain 处理
+            const wantHostOnly = !!opt.hostOnly;
+            const domain = (!wantHostOnly && opt.domain && opt.domain !== 'N/A') ? opt.domain : '';
             try {
                 if (HAS_CS) {
-                    const p = { name: key, value: value || '', path, expires: Date.now() + days * 86400000 };
+                    const p = {
+                        name: key,
+                        value: value || '',
+                        path,
+                        expires: Date.now() + days * 86400000
+                    };
                     if (domain) p.domain = domain;
+                    if (opt.sameSite) p.sameSite = opt.sameSite;
+                    if (opt.secure) p.secure = true;
                     await window.cookieStore.set(p);
                     return true;
                 }
@@ -392,6 +404,8 @@ button{font-family:inherit}
                 if (days > 0) c += `; expires=${new Date(Date.now() + days * 86400000).toUTCString()}`;
                 c += `; path=${path}`;
                 if (domain) c += `; domain=${domain}`;
+                if (opt.secure) c += '; secure';
+                if (opt.sameSite) c += `; samesite=${opt.sameSite}`;
                 document.cookie = c;
                 return true;
             } catch (e) {
@@ -401,23 +415,26 @@ button{font-family:inherit}
             }
         },
         async del(c) {
-            try {
-                if (HAS_CS && !c._legacy) {
+            // 精确删除：用 cookieStore 的话只调一次 delete
+            // host-only cookie 不传 domain 字段；Domain-attr cookie 传 c.domain
+            if (HAS_CS && !c._legacy) {
+                try {
                     const p = { name: c.key };
-                    if (c.domain && c.domain !== 'N/A') p.domain = c.domain;
+                    if (!c._hostOnly && c.domain && c.domain !== 'N/A') p.domain = c.domain;
                     if (c.path) p.path = c.path;
                     await window.cookieStore.delete(p);
+                    return true;
+                } catch (e) {
+                    // cookieStore 失败再走 document.cookie 兜底
                 }
-                // 兜底：扫各种 path/domain 组合（旧 document.cookie 路径）
-                const h = location.hostname, dh = '.' + h;
+            }
+            // document.cookie fallback：只用原 cookie 的 path/domain
+            try {
                 const exp = 'expires=Thu, 01 Jan 1970 00:00:00 GMT';
-                for (const p of ['/', location.pathname || '/']) {
-                    for (const d of ['', h, dh, c.domain || '']) {
-                        let s = `${encodeURIComponent(c.key)}=; ${exp}; path=${p}`;
-                        if (d) s += `; domain=${d}`;
-                        document.cookie = s;
-                    }
-                }
+                const path = c.path || '/';
+                let s = `${encodeURIComponent(c.key)}=; ${exp}; path=${path}`;
+                if (!c._hostOnly && c.domain && c.domain !== 'N/A') s += `; domain=${c.domain}`;
+                document.cookie = s;
                 return true;
             } catch { return false; }
         }
@@ -498,7 +515,12 @@ button{font-family:inherit}
         if (!snapshot?.length) return;
         await Promise.all(snapshot.map(c => {
             const days = c.expires ? Math.max(1, Math.round((c.expires - Date.now()) / 86400000)) : 365;
-            return ckMgr.set(c.key, c.value, { domain: c.domain, path: c.path, days });
+            return ckMgr.set(c.key, c.value, {
+                domain: c.domain, path: c.path, days,
+                hostOnly: !!c._hostOnly,
+                secure: !!c.secure,
+                sameSite: c.sameSite || ''
+            });
         }));
         toast(t('tRestoredN', snapshot.length), 'ok');
         render();
@@ -978,12 +1000,49 @@ button{font-family:inherit}
             const key = $('#ek').value.trim();
             if (!key) return toast(t('tNeedKey'), 'err');
             const value = $('#ev').value;
-            const domain = $('#ed').value.trim();
+            const inputDomain = $('#ed').value.trim();
             const path = $('#ep').value.trim() || '/';
             const days = parseInt($('#eday').value, 10);
-            // 修改模式：先删旧（同 key+domain+path），再写新；如果 key 改了，旧的也会被一并清理
-            if (!isAdd) await ckMgr.del(c);
-            const ok = await ckMgr.set(key, value, { domain, path, days: isNaN(days) ? 365 : days });
+
+            // 关键：如果原 cookie 是 host-only，且用户没改 domain（或改成与 hostname 相同），保持 host-only
+            // 这样 cookieStore.set 不会创建一个 Domain= 属性的副本，导致同名两条
+            let hostOnly = false;
+            let domainToSet = inputDomain;
+            if (!isAdd && c._hostOnly) {
+                // 原本就是 host-only；如果用户没动 domain 输入框（仍等于 location.hostname），保持 host-only
+                if (inputDomain === '' || inputDomain === location.hostname) {
+                    hostOnly = true;
+                    domainToSet = '';
+                }
+            } else if (isAdd) {
+                // 新增时：如果用户填的就是当前 hostname，默认按 host-only 创建（更安全，不影响子域）
+                if (inputDomain === '' || inputDomain === location.hostname) {
+                    hostOnly = true;
+                    domainToSet = '';
+                }
+            }
+
+            // 修改模式：精准判断是否需要先删旧
+            // - 同 (key, domain, path, hostOnly)：直接 set 覆盖（cookieStore.set 会原位更新）
+            // - 改了任意一项：删旧的，写新的
+            if (!isAdd) {
+                const sameKey = c.key === key;
+                const samePath = (c.path || '/') === path;
+                const sameHostOnly = !!c._hostOnly === hostOnly;
+                const sameDomain = hostOnly ? sameHostOnly : (c.domain || '') === domainToSet;
+                if (!(sameKey && samePath && sameHostOnly && sameDomain)) {
+                    await ckMgr.del(c);
+                }
+            }
+            const setOpt = {
+                domain: domainToSet,
+                hostOnly,
+                path,
+                days: isNaN(days) ? 365 : days,
+                secure: !isAdd ? !!c.secure : false,
+                sameSite: !isAdd ? c.sameSite : ''
+            };
+            const ok = await ckMgr.set(key, value, setOpt);
             if (ok) { toast(isAdd ? t('tAdded') : t('tModified'), 'ok'); close(); render(); }
         });
     }
