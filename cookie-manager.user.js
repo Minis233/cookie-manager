@@ -2,9 +2,9 @@
 // @name         Cookie Manager
 // @name:zh-CN   Cookie 管理器
 // @namespace    https://github.com/Minis233/cookie-manager
-// @version      0.1.0
-// @description  A modern cookie manager userscript: dual-engine read/write, batch CRUD, multi-select, paste-to-import, JSON export/import, multiple copy formats, undo delete, bilingual UI.
-// @description:zh-CN  现代化 Cookie 管理油猴脚本：双核引擎读写、批量增删改查、多选、粘贴解析、JSON 导入导出、多种复制格式、撤销删除、中英双语 UI
+// @version      0.4.0
+// @description  A modern cookie manager userscript: dual-engine read/write, batch CRUD, multi-select, paste-to-import, JSON export/import, multiple copy formats, undo delete, dark mode, sort/filter/group, bilingual UI.
+// @description:zh-CN  现代化 Cookie 管理油猴脚本：双核引擎读写、批量增删改查、多选、粘贴解析、JSON 导入导出、多种复制格式、撤销删除、暗色模式、排序/筛选/分组、中英双语 UI
 // @author       Minis
 // @license      MIT
 // @homepageURL  https://github.com/Minis233/cookie-manager
@@ -85,6 +85,12 @@
             secure: 'Secure', http: 'HttpOnly', sameSite: 'SameSite',
             sizeBytes: n => `${n} B`,
             sizeWarn: '体积过大（>4KB 可能被截断）',
+            theme: '主题', themeAuto: '跟随系统', themeLight: '浅色', themeDark: '深色',
+            sort: '排序', sortKey: 'Key', sortSize: '体积', sortExpires: '过期时间',
+            sortAsc: '↑ 升序', sortDesc: '↓ 降序',
+            group: '分组', groupNone: '不分组', groupDomain: '按域名', groupRoot: '按主域',
+            filterSecure: '仅 Secure', filterHttp: '仅 HttpOnly',
+            statsN: (n, total) => total > n ? `${n} / ${total}` : `${n}`,
         },
         en: {
             title: 'Cookie Manager', titleCompat: ' (Compat)',
@@ -121,6 +127,12 @@
             secure: 'Secure', http: 'HttpOnly', sameSite: 'SameSite',
             sizeBytes: n => `${n} B`,
             sizeWarn: 'Too large (>4KB may be truncated)',
+            theme: 'Theme', themeAuto: 'Auto', themeLight: 'Light', themeDark: 'Dark',
+            sort: 'Sort', sortKey: 'Key', sortSize: 'Size', sortExpires: 'Expires',
+            sortAsc: '↑ Asc', sortDesc: '↓ Desc',
+            group: 'Group', groupNone: 'No group', groupDomain: 'By domain', groupRoot: 'By root domain',
+            filterSecure: 'Secure only', filterHttp: 'HttpOnly only',
+            statsN: (n, total) => total > n ? `${n} / ${total}` : `${n}`,
         }
     };
     const detectLang = () => {
@@ -136,70 +148,134 @@
     };
     const setLang = (l) => { lang = l; gmSet(LANG_KEY, l); };
 
+    /* ---------- 偏好（主题 / 排序 / 分组 / 筛选） ---------- */
+    const PREFS_KEY = 'cm_prefs_v1';
+    const defaultPrefs = { theme: 'auto', sort: 'key', sortDir: 'asc', group: 'none', secureOnly: false, httpOnly: false, collapsed: {} };
+    let prefs = Object.assign({}, defaultPrefs, gmGet(PREFS_KEY, {}));
+    const savePrefs = () => gmSet(PREFS_KEY, prefs);
+    const setPref = (k, v) => { prefs[k] = v; savePrefs(); };
+
+    let mql = null;
+    function applyTheme() {
+        if (!host) return;
+        let dark = false;
+        if (prefs.theme === 'dark') dark = true;
+        else if (prefs.theme === 'auto') {
+            try { dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches; } catch {}
+        }
+        host.classList.toggle('dark', dark);
+    }
+    function watchTheme() {
+        if (mql || !window.matchMedia) return;
+        try {
+            mql = window.matchMedia('(prefers-color-scheme: dark)');
+            const handler = () => { if (prefs.theme === 'auto') applyTheme(); };
+            if (mql.addEventListener) mql.addEventListener('change', handler);
+            else if (mql.addListener) mql.addListener(handler);
+        } catch {}
+    }
+
     /* ---------- 样式 ---------- */
     const STYLE = `
-:host{all:initial}
+:host{all:initial;
+  --bg:#fff;--fg:#222;--fg-soft:#444;--fg-mute:#666;--fg-faint:#888;
+  --border:#ececec;--border-strong:#d4d8de;--surface:#fafbfc;--surface-2:#f3f5f8;--surface-3:#f6f8fb;--surface-pop:#fff;
+  --primary:#2f6ce6;--primary-fg:#fff;--primary-soft:rgba(47,108,230,.15);
+  --warn:#dc3545;--warn-soft:#fde0e0;--warn-text:#a02020;
+  --flag-bg:#dfe9fa;--flag-fg:#1a4baf;
+  --pop-shadow:0 8px 24px rgba(0,0,0,.18);
+  --panel-shadow:0 12px 40px rgba(0,0,0,.35);
+  --overlay:rgba(0,0,0,.5);
+  --hover:#eef2f7;
+  --size-bg:#eef0f3;--size-fg:#888;
+  --kd-fg:#666;
+  --toast-bg:rgba(20,20,20,.92);--toast-ok:rgba(40,140,80,.95);--toast-err:rgba(190,40,40,.95);
+}
+:host(.dark){
+  --bg:#1f2127;--fg:#e6e7ea;--fg-soft:#c0c2c8;--fg-mute:#9aa0aa;--fg-faint:#7a8088;
+  --border:#34373f;--border-strong:#454853;--surface:#262931;--surface-2:#2c2f37;--surface-3:#2a2d35;--surface-pop:#262931;
+  --primary:#5b8def;--primary-fg:#fff;--primary-soft:rgba(91,141,239,.22);
+  --warn:#ef5260;--warn-soft:#3a2225;--warn-text:#ff9aa3;
+  --flag-bg:#22324a;--flag-fg:#9bbcff;
+  --pop-shadow:0 8px 24px rgba(0,0,0,.55);
+  --panel-shadow:0 12px 40px rgba(0,0,0,.6);
+  --overlay:rgba(0,0,0,.65);
+  --hover:#2f333d;
+  --size-bg:#2c2f37;--size-fg:#9aa0aa;
+  --kd-fg:#a0a4ad;
+}
 *{box-sizing:border-box}
 button{font-family:inherit}
 #fab{position:fixed;width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,#4f8cff,#3358c4);color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;box-shadow:0 4px 14px rgba(0,0,0,.28);z-index:2147483646;cursor:grab;user-select:none;touch-action:none}
 #fab:active{cursor:grabbing}
-.ov{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:2147483647;display:none;align-items:center;justify-content:center;padding:12px;-webkit-tap-highlight-color:transparent}
+.ov{position:fixed;inset:0;background:var(--overlay);z-index:2147483647;display:none;align-items:center;justify-content:center;padding:12px;-webkit-tap-highlight-color:transparent}
 .ov.show{display:flex}
-.panel{background:#fff;color:#222;border-radius:12px;width:100%;max-width:460px;max-height:86vh;display:flex;flex-direction:column;font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 12px 40px rgba(0,0,0,.35);overflow:hidden}
-.head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:#2f6ce6;color:#fff;flex-shrink:0}
+.panel{background:var(--bg);color:var(--fg);border-radius:12px;width:100%;max-width:460px;max-height:86vh;display:flex;flex-direction:column;font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;box-shadow:var(--panel-shadow);overflow:hidden}
+.head{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:var(--primary);color:var(--primary-fg);flex-shrink:0}
 .head h3{margin:0;font-size:15px;font-weight:600}
 .x{cursor:pointer;font-size:22px;line-height:1;padding:0 4px}
 .body{flex:1;overflow-y:auto;padding:12px 14px}
-.foot{display:flex;gap:8px;padding:10px 14px;border-top:1px solid #ececec;background:#fafbfc;flex-shrink:0;flex-wrap:wrap}
+.foot{display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--border);background:var(--surface);flex-shrink:0;flex-wrap:wrap}
 .row{display:flex;flex-direction:column;gap:4px;margin-bottom:12px}
-.row label{font-size:12px;color:#666;font-weight:600}
-.row input[type=text],.row input[type=number],.row textarea,.row input[type=search]{width:100%;padding:8px 10px;border:1px solid #d4d8de;border-radius:6px;font-size:14px;background:#fff;color:#222;font-family:inherit}
+.row label{font-size:12px;color:var(--fg-mute);font-weight:600}
+.row input[type=text],.row input[type=number],.row textarea,.row input[type=search]{width:100%;padding:8px 10px;border:1px solid var(--border-strong);border-radius:6px;font-size:14px;background:var(--bg);color:var(--fg);font-family:inherit}
 .row textarea{min-height:80px;resize:vertical}
-.row input:focus,.row textarea:focus{outline:none;border-color:#2f6ce6;box-shadow:0 0 0 2px rgba(47,108,230,.15)}
-.btn{padding:7px 12px;border-radius:6px;border:1px solid #d4d8de;background:#fff;color:#333;cursor:pointer;font-size:13px}
+.row input:focus,.row textarea:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 2px var(--primary-soft)}
+.btn{padding:7px 12px;border-radius:6px;border:1px solid var(--border-strong);background:var(--bg);color:var(--fg);cursor:pointer;font-size:13px}
 .btn:active{transform:scale(.97)}
-.btn.pri{background:#2f6ce6;color:#fff;border-color:#2f6ce6}
-.btn.warn{background:#dc3545;color:#fff;border-color:#dc3545}
+.btn.pri{background:var(--primary);color:var(--primary-fg);border-color:var(--primary)}
+.btn.warn{background:var(--warn);color:#fff;border-color:var(--warn)}
 .btn.sm{padding:4px 8px;font-size:12px}
+.btn.ghost{background:transparent;border-color:var(--border-strong);color:var(--fg-soft)}
+.btn.chip{padding:3px 9px;font-size:12px;border-radius:14px;background:var(--surface-2);border-color:var(--border-strong);color:var(--fg-soft)}
+.btn.chip.on{background:var(--primary);color:var(--primary-fg);border-color:var(--primary)}
 .search{display:flex;gap:6px;margin-bottom:10px}
 .search input{flex:1}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
 .grid .btn{width:100%}
-.ck{border:1px solid #ececec;border-radius:8px;padding:10px;margin-bottom:8px;background:#fff}
+.toolbar{display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.toolbar .label{font-size:11px;color:var(--fg-mute);margin-right:2px}
+.ck{border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;background:var(--bg)}
 .ck-h{display:flex;align-items:center;gap:8px}
-.ck-k{font-weight:600;color:#1a1a1a;word-break:break-all;flex:1}
-.ck-v{margin:6px 0;color:#444;word-break:break-all;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
-.ck-p{font-size:11px;color:#777;background:#f3f5f8;padding:3px 6px;border-radius:4px;display:inline-block}
+.ck-k{font-weight:600;color:var(--fg);word-break:break-all;flex:1}
+.ck-v{margin:6px 0;color:var(--fg-soft);word-break:break-all;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.ck-p{font-size:11px;color:var(--fg-faint);background:var(--surface-2);padding:3px 6px;border-radius:4px;display:inline-block}
 .ck-a{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
-.cb{display:none;width:18px;height:18px;border:1.5px solid #999;border-radius:4px;align-items:center;justify-content:center;color:#fff;font-size:12px;cursor:pointer;flex-shrink:0}
+.cb{display:none;width:18px;height:18px;border:1.5px solid var(--fg-faint);border-radius:4px;align-items:center;justify-content:center;color:#fff;font-size:12px;cursor:pointer;flex-shrink:0}
 .sel .cb{display:inline-flex}
-.cb.on{background:#2f6ce6;border-color:#2f6ce6}
-.empty{text-align:center;color:#888;padding:24px 0}
+.cb.on{background:var(--primary);border-color:var(--primary)}
+.empty{text-align:center;color:var(--fg-faint);padding:24px 0}
 .br{display:flex;gap:6px;align-items:center;margin-bottom:6px}
-.br input{flex:1;padding:6px 8px;border:1px solid #d4d8de;border-radius:4px;font-size:13px}
-.br .rm{width:28px;height:28px;border-radius:50%;border:none;background:#dc3545;color:#fff;font-weight:700;cursor:pointer;flex-shrink:0}
+.br input{flex:1;padding:6px 8px;border:1px solid var(--border-strong);border-radius:4px;font-size:13px;background:var(--bg);color:var(--fg)}
+.br .rm{width:28px;height:28px;border-radius:50%;border:none;background:var(--warn);color:#fff;font-weight:700;cursor:pointer;flex-shrink:0}
 #toast{position:fixed;left:50%;top:24px;transform:translateX(-50%);z-index:2147483647;display:flex;flex-direction:column;gap:6px;pointer-events:none}
-.t{background:rgba(20,20,20,.92);color:#fff;padding:8px 14px;border-radius:18px;font-size:13px;max-width:80vw;box-shadow:0 4px 14px rgba(0,0,0,.3)}
-.t.ok{background:rgba(40,140,80,.95)}
-.t.err{background:rgba(190,40,40,.95)}
-.dlg{background:#fff;border-radius:10px;padding:16px;width:100%;max-width:360px;color:#222}
+.t{background:var(--toast-bg);color:#fff;padding:8px 14px;border-radius:18px;font-size:13px;max-width:80vw;box-shadow:0 4px 14px rgba(0,0,0,.3)}
+.t.ok{background:var(--toast-ok)}
+.t.err{background:var(--toast-err)}
+.dlg{background:var(--bg);border-radius:10px;padding:16px;width:100%;max-width:360px;color:var(--fg)}
 .dlg .m{margin-bottom:12px;line-height:1.5;word-break:break-word}
 .dlg .a{display:flex;justify-content:flex-end;gap:8px}
-.dlg input{width:100%;padding:8px 10px;border:1px solid #d4d8de;border-radius:6px;font-size:14px;margin-bottom:12px}
-.dlg textarea{width:100%;min-height:140px;padding:8px 10px;border:1px solid #d4d8de;border-radius:6px;font-size:13px;font-family:ui-monospace,Menlo,Consolas,monospace;margin-bottom:12px;resize:vertical}
-.ck-detail{margin-top:8px;padding:8px;background:#f6f8fb;border-radius:6px;font-size:12px;display:none}
+.dlg input{width:100%;padding:8px 10px;border:1px solid var(--border-strong);border-radius:6px;font-size:14px;margin-bottom:12px;background:var(--bg);color:var(--fg)}
+.dlg textarea{width:100%;min-height:140px;padding:8px 10px;border:1px solid var(--border-strong);border-radius:6px;font-size:13px;font-family:ui-monospace,Menlo,Consolas,monospace;margin-bottom:12px;resize:vertical;background:var(--bg);color:var(--fg)}
+.ck-detail{margin-top:8px;padding:8px;background:var(--surface-3);border-radius:6px;font-size:12px;display:none}
 .ck.open .ck-detail{display:block}
 .ck.open .ck-v{-webkit-line-clamp:initial;display:block}
 .ck-detail .row-d{display:flex;gap:8px;margin-bottom:4px;word-break:break-all}
-.ck-detail .k-d{color:#666;flex:0 0 70px;font-weight:600}
-.ck-detail .v-d{color:#222;flex:1}
-.ck-size{font-size:10px;color:#888;background:#eef0f3;padding:1px 5px;border-radius:3px;margin-left:6px}
-.ck-size.warn{background:#fde0e0;color:#a02020}
-.ck-flag{display:inline-block;padding:1px 5px;border-radius:3px;font-size:10px;margin-left:4px;background:#dfe9fa;color:#1a4baf}
-.popm{position:fixed;background:#fff;border:1px solid #e0e3e8;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:4px;z-index:2147483647;min-width:160px}
-.popm .it{padding:8px 12px;cursor:pointer;border-radius:4px;font-size:13px;color:#222;white-space:nowrap}
-.popm .it:hover,.popm .it:active{background:#eef2f7}
-.popm .it.dv{height:1px;background:#ececec;padding:0;margin:4px 0}
+.ck-detail .k-d{color:var(--kd-fg);flex:0 0 70px;font-weight:600}
+.ck-detail .v-d{color:var(--fg);flex:1}
+.ck-size{font-size:10px;color:var(--size-fg);background:var(--size-bg);padding:1px 5px;border-radius:3px;margin-left:6px}
+.ck-size.warn{background:var(--warn-soft);color:var(--warn-text)}
+.ck-flag{display:inline-block;padding:1px 5px;border-radius:3px;font-size:10px;margin-left:4px;background:var(--flag-bg);color:var(--flag-fg)}
+.group-h{display:flex;align-items:center;gap:6px;padding:6px 10px;margin:8px 0 4px;background:var(--surface);border-radius:6px;cursor:pointer;font-size:12px;color:var(--fg-mute);font-weight:600;user-select:none}
+.group-h .arrow{font-size:10px;transition:transform .15s}
+.group.collapsed .group-h .arrow{transform:rotate(-90deg)}
+.group.collapsed .group-body{display:none}
+.group-h .count{margin-left:auto;font-weight:400;color:var(--fg-faint)}
+.popm{position:fixed;background:var(--surface-pop);border:1px solid var(--border);border-radius:8px;box-shadow:var(--pop-shadow);padding:4px;z-index:2147483647;min-width:160px}
+.popm .it{padding:8px 12px;cursor:pointer;border-radius:4px;font-size:13px;color:var(--fg);white-space:nowrap}
+.popm .it.active{background:var(--primary-soft);color:var(--primary)}
+.popm .it:hover,.popm .it:active{background:var(--hover)}
+.popm .it.dv{height:1px;background:var(--border);padding:0;margin:4px 0}
 .t .undo{background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.4);color:#fff;padding:3px 10px;border-radius:12px;font-size:12px;cursor:pointer;margin-left:10px;pointer-events:auto}
 `;
 
@@ -218,6 +294,8 @@ button{font-family:inherit}
         toastBox = document.createElement('div'); toastBox.id = 'toast'; sr.appendChild(toastBox);
         buildFab();
         buildPanel();
+        applyTheme();
+        watchTheme();
     }
 
     function startGuardian() {
@@ -368,9 +446,9 @@ button{font-family:inherit}
         m.className = 'popm'; m.__a = anchor;
         for (const it of items) {
             const el = document.createElement('div');
-            el.className = it.divider ? 'it dv' : 'it';
+            el.className = it.divider ? 'it dv' : 'it' + (it.active ? ' active' : '');
             if (!it.divider) {
-                el.textContent = it.label;
+                el.textContent = (it.active ? '✓ ' : '') + it.label;
                 el.addEventListener('click', () => { m.__close(); it.fn?.(); });
             }
             m.appendChild(el);
@@ -542,6 +620,13 @@ button{font-family:inherit}
                 <input type="search" id="qk">
                 <input type="search" id="qv">
             </div>
+            <div class="toolbar">
+                <button class="btn chip sm" data-a="sort"></button>
+                <button class="btn chip sm" data-a="group"></button>
+                <button class="btn chip sm" data-a="fsec"></button>
+                <button class="btn chip sm" data-a="fhttp"></button>
+                <span class="label" data-a="stats" style="margin-left:auto"></span>
+            </div>
             <div id="list"></div>`;
         body.querySelector('[data-a=badd]').textContent = t('badd');
         body.querySelector('[data-a=sadd]').textContent = t('sadd');
@@ -553,10 +638,11 @@ button{font-family:inherit}
         foot.innerHTML = '';
 
         state.all = await ckMgr.get();
-        state.filtered = state.all;
+        applyFiltersAndSort();
         state.sel = false;
         state.pool.clear();
         renderList();
+        renderToolbar();
 
         body.querySelector('[data-a=badd]').addEventListener('click', showBatch);
         body.querySelector('[data-a=sadd]').addEventListener('click', () => showEdit({ mode: 'add' }));
@@ -568,6 +654,10 @@ button{font-family:inherit}
             popMenu(e.currentTarget, [
                 { label: t('exp'), fn: () => exportJson(state.all) },
                 { label: t('impJson'), fn: () => showImport() },
+                { divider: true },
+                { label: t('theme') + ': ' + t('themeAuto'), active: prefs.theme === 'auto', fn: () => { setPref('theme','auto'); applyTheme(); } },
+                { label: t('theme') + ': ' + t('themeLight'), active: prefs.theme === 'light', fn: () => { setPref('theme','light'); applyTheme(); } },
+                { label: t('theme') + ': ' + t('themeDark'), active: prefs.theme === 'dark', fn: () => { setPref('theme','dark'); applyTheme(); } },
             ]);
         });
         body.querySelector('[data-a=delall]').addEventListener('click', async () => {
@@ -579,17 +669,105 @@ button{font-family:inherit}
             await render();
             toast(t('tDeleted'), 'ok', { label: t('tUndo'), fn: () => restoreCookies(snapshot) });
         });
+        body.querySelector('[data-a=sort]').addEventListener('click', e => {
+            const cur = prefs.sort, dir = prefs.sortDir;
+            popMenu(e.currentTarget, [
+                { label: t('sortKey'),     active: cur === 'key',     fn: () => { setPref('sort','key');     applyFiltersAndSort(); renderList(); renderToolbar(); } },
+                { label: t('sortSize'),    active: cur === 'size',    fn: () => { setPref('sort','size');    applyFiltersAndSort(); renderList(); renderToolbar(); } },
+                { label: t('sortExpires'), active: cur === 'expires', fn: () => { setPref('sort','expires'); applyFiltersAndSort(); renderList(); renderToolbar(); } },
+                { divider: true },
+                { label: t('sortAsc'),  active: dir === 'asc',  fn: () => { setPref('sortDir','asc');  applyFiltersAndSort(); renderList(); renderToolbar(); } },
+                { label: t('sortDesc'), active: dir === 'desc', fn: () => { setPref('sortDir','desc'); applyFiltersAndSort(); renderList(); renderToolbar(); } },
+            ]);
+        });
+        body.querySelector('[data-a=group]').addEventListener('click', e => {
+            popMenu(e.currentTarget, [
+                { label: t('groupNone'),   active: prefs.group === 'none',   fn: () => { setPref('group','none');   renderList(); renderToolbar(); } },
+                { label: t('groupDomain'), active: prefs.group === 'domain', fn: () => { setPref('group','domain'); renderList(); renderToolbar(); } },
+                { label: t('groupRoot'),   active: prefs.group === 'root',   fn: () => { setPref('group','root');   renderList(); renderToolbar(); } },
+            ]);
+        });
+        body.querySelector('[data-a=fsec]').addEventListener('click', () => {
+            setPref('secureOnly', !prefs.secureOnly);
+            applyFiltersAndSort(); renderList(); renderToolbar();
+        });
+        body.querySelector('[data-a=fhttp]').addEventListener('click', () => {
+            setPref('httpOnly', !prefs.httpOnly);
+            applyFiltersAndSort(); renderList(); renderToolbar();
+        });
         const qk = body.querySelector('#qk'), qv = body.querySelector('#qv');
-        const onSearch = () => {
-            const k = qk.value.trim().toLowerCase(), v = qv.value.trim().toLowerCase();
-            state.filtered = state.all.filter(c => safeDecode(c.key).toLowerCase().includes(k) && safeDecode(c.value).toLowerCase().includes(v));
-            renderList();
-        };
+        const onSearch = () => { applyFiltersAndSort(); renderList(); renderToolbar(); };
+        state.qk = qk; state.qv = qv;
         qk.addEventListener('input', onSearch);
         qv.addEventListener('input', onSearch);
     }
 
+    function applyFiltersAndSort() {
+        const qk = (state.qk?.value || '').trim().toLowerCase();
+        const qv = (state.qv?.value || '').trim().toLowerCase();
+        let arr = state.all.filter(c =>
+            safeDecode(c.key).toLowerCase().includes(qk) &&
+            safeDecode(c.value).toLowerCase().includes(qv)
+        );
+        if (prefs.secureOnly) arr = arr.filter(c => c.secure);
+        if (prefs.httpOnly) arr = arr.filter(c => c.httpOnly);
+        const dir = prefs.sortDir === 'desc' ? -1 : 1;
+        const key = prefs.sort;
+        arr.sort((a, b) => {
+            let av, bv;
+            if (key === 'size') { av = cookieSize(a); bv = cookieSize(b); }
+            else if (key === 'expires') { av = a.expires || Infinity; bv = b.expires || Infinity; }
+            else { av = safeDecode(a.key).toLowerCase(); bv = safeDecode(b.key).toLowerCase(); }
+            return av < bv ? -dir : av > bv ? dir : 0;
+        });
+        state.filtered = arr;
+    }
+
+    function renderToolbar() {
+        const body = mainOv.querySelector('.body');
+        if (!body) return;
+        const sortBtn = body.querySelector('[data-a=sort]');
+        if (sortBtn) {
+            const sortLabel = { key: t('sortKey'), size: t('sortSize'), expires: t('sortExpires') }[prefs.sort] || t('sortKey');
+            const arrow = prefs.sortDir === 'desc' ? '↓' : '↑';
+            sortBtn.textContent = `${t('sort')}: ${sortLabel} ${arrow}`;
+        }
+        const groupBtn = body.querySelector('[data-a=group]');
+        if (groupBtn) {
+            const groupLabel = { none: t('groupNone'), domain: t('groupDomain'), root: t('groupRoot') }[prefs.group] || t('groupNone');
+            groupBtn.textContent = `${t('group')}: ${groupLabel}`;
+        }
+        const fsec = body.querySelector('[data-a=fsec]');
+        const fhttp = body.querySelector('[data-a=fhttp]');
+        if (fsec) { fsec.textContent = t('filterSecure'); fsec.classList.toggle('on', !!prefs.secureOnly); }
+        if (fhttp) { fhttp.textContent = t('filterHttp'); fhttp.classList.toggle('on', !!prefs.httpOnly); }
+        const stats = body.querySelector('[data-a=stats]');
+        if (stats) stats.textContent = t('statsN', state.filtered.length, state.all.length);
+    }
+
     function ckId(c) { return `${c.key}||${c.domain}||${c.path}`; }
+
+    function rootDomain(d) {
+        if (!d) return location.hostname;
+        const h = d.replace(/^\./, '');
+        // crude: take last two labels (works for most public domains; doesn't handle co.uk etc but good enough)
+        const parts = h.split('.');
+        if (parts.length <= 2) return h;
+        return parts.slice(-2).join('.');
+    }
+
+    function groupCookies(arr) {
+        if (prefs.group === 'none') return [{ key: '', items: arr }];
+        const map = new Map();
+        for (const c of arr) {
+            const k = prefs.group === 'root'
+                ? rootDomain(c.domain || location.hostname)
+                : (c.domain || location.hostname).replace(/^\./, '');
+            if (!map.has(k)) map.set(k, []);
+            map.get(k).push(c);
+        }
+        return [...map.entries()].sort((a, b) => a[0] < b[0] ? -1 : 1).map(([key, items]) => ({ key, items }));
+    }
 
     function renderList() {
         const list = mainOv.querySelector('#list');
@@ -598,13 +776,36 @@ button{font-family:inherit}
         wrap.className = state.sel ? 'sel' : '';
         list.appendChild(wrap);
         if (!state.filtered.length) {
-            wrap.innerHTML = '';
             const e = document.createElement('div');
             e.className = 'empty';
             e.textContent = t('empty');
             wrap.appendChild(e);
-        } else {
+        } else if (prefs.group === 'none') {
             for (const c of state.filtered) wrap.appendChild(renderItem(c));
+        } else {
+            const groups = groupCookies(state.filtered);
+            for (const g of groups) {
+                const groupEl = document.createElement('div');
+                const collapsed = !!prefs.collapsed[g.key];
+                groupEl.className = 'group' + (collapsed ? ' collapsed' : '');
+                const header = document.createElement('div');
+                header.className = 'group-h';
+                const arrow = document.createElement('span'); arrow.className = 'arrow'; arrow.textContent = '▼';
+                const name = document.createElement('span'); name.textContent = g.key;
+                const count = document.createElement('span'); count.className = 'count'; count.textContent = String(g.items.length);
+                header.append(arrow, name, count);
+                header.addEventListener('click', () => {
+                    prefs.collapsed[g.key] = !collapsed;
+                    savePrefs();
+                    renderList();
+                });
+                groupEl.appendChild(header);
+                const body = document.createElement('div');
+                body.className = 'group-body';
+                for (const c of g.items) body.appendChild(renderItem(c));
+                groupEl.appendChild(body);
+                wrap.appendChild(groupEl);
+            }
         }
         renderFoot();
     }

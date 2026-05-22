@@ -2,7 +2,7 @@
 
 A modern userscript that turns any browser into a full-featured cookie editor. Runs on **Tampermonkey, Violentmonkey, Greasemonkey, Userscripts (Safari), Stay (Safari), Via (Android)** and any other userscript engine.
 
-[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://github.com/Minis233/cookie-manager)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](https://github.com/Minis233/cookie-manager)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 ## Features
@@ -10,10 +10,12 @@ A modern userscript that turns any browser into a full-featured cookie editor. R
 - **Dual engine** — uses the modern `cookieStore` API on Chromium, automatically falls back to `document.cookie` on Firefox/Safari/legacy
 - **Full CRUD** — add / edit / delete / batch-add with smart paste parsing
 - **Multi-select** — select-all (filter-aware), bulk copy, bulk delete with one-click undo
+- **Sort / filter / group** — sort by key / size / expires (asc/desc), filter Secure-only / HttpOnly-only, group by domain or root domain
 - **Multiple copy formats** — Cookie Header, cURL `--cookie`, JSON (DevTools / EditThisCookie compatible), KV
 - **Import / Export JSON** — back up your login state, share between devices
 - **Detail view** — tap a cookie to see Domain / Path / Expires / Secure / HttpOnly / SameSite / Size, with size warning at >4 KB
 - **Undo delete** — every delete shows a 5-second Undo toast
+- **Dark mode** — auto / light / dark, follows `prefers-color-scheme` by default
 - **Bilingual UI** — instant 中/EN switch, persists across sessions, auto-detects browser language
 - **Search** — filter by key or value
 - **Draggable floating button** — position is remembered
@@ -84,10 +86,13 @@ The preview harness in `preview/index.html` mocks `GM_getValue` / `GM_setValue` 
 
 ## Roadmap
 
-- [ ] Optional dark mode
-- [ ] Quick filter chips (Secure / HttpOnly / by domain)
+- [x] ~~Optional dark mode~~ (v0.4.0)
+- [x] ~~Quick filter chips (Secure / HttpOnly)~~ (v0.4.0)
+- [x] ~~Sort by key / size / expires~~ (v0.4.0)
+- [x] ~~Group by domain~~ (v0.4.0)
 - [ ] Drag to reorder selection
 - [ ] Per-domain favorite presets
+- [ ] Filter by domain pattern
 
 PRs welcome.
 
